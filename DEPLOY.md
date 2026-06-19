@@ -9,6 +9,17 @@
 
 `app.js` の `AUTH_CONFIG.googleClientId` に Google OAuth クライアントIDを設定し、`AUTH_CONFIG.enabled` を `true` にするとGoogleログイン制限が有効になります。
 
+## 今回の無料公開
+
+GitHub Pages の無料枠で公開しています。
+
+- 公開URL: https://nagamori55hiro-maker.github.io/shift-kun-web/
+- GitHubリポジトリ: https://github.com/nagamori55hiro-maker/shift-kun-web
+- OAuth Client ID: `309455868192-sj3j6qo659hj53lnfuelv6otu1nvcm4g.apps.googleusercontent.com`
+- 承認済み JavaScript 生成元: `https://nagamori55hiro-maker.github.io`
+
+GitHub Pages の無料プランでは公開リポジトリが前提です。アプリは静的ファイルだけで動き、アップロードしたシフト表やルールファイルはブラウザ内で処理します。
+
 ## Firebase Hostingで公開
 
 1. Firebaseプロジェクトを作成

@@ -45,8 +45,8 @@ const HEADER_PATTERNS = {
 };
 
 const AUTH_CONFIG = {
-  enabled: false,
-  googleClientId: "",
+  enabled: true,
+  googleClientId: "309455868192-sj3j6qo659hj53lnfuelv6otu1nvcm4g.apps.googleusercontent.com",
   allowedEmails: [
     "cs.administrator@mensclear.com",
     "cs.leader2@mensclear.com",
