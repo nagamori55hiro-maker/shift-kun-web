@@ -20,6 +20,11 @@ GitHub Pages の無料枠で公開しています。
 
 GitHub Pages の無料プランでは公開リポジトリが前提です。アプリは静的ファイルだけで動き、アップロードしたシフト表やルールファイルはブラウザ内で処理します。
 
+Googleログイン時に「テストユーザーではありません」と表示される場合は、Google Cloud Console の Google Auth Platform > 対象 > テストユーザーで以下を追加してください。
+
+- cs.administrator@mensclear.com
+- cs.leader2@mensclear.com
+
 ## Firebase Hostingで公開
 
 1. Firebaseプロジェクトを作成
