@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>シフトくん</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  </head>
+  <body>
+    <div class="auth-gate" id="authGate" hidden>
+      <div class="auth-card">
+        <span class="brand-mark"><i data-lucide="shield-check"></i></span>
+        <div>
+          <span class="eyebrow">Access</span>
+          <h1>シフトくん</h1>
+          <p id="authMessage">許可されたGoogleアカウントでログインしてください。</p>
+        </div>
+        <div id="googleSignIn" class="google-signin"></div>
+      </div>
+    </div>
+
+    <div class="app-shell" id="appShell">
+      <header class="topbar">
+        <div class="brand-block">
+          <span class="brand-mark"><i data-lucide="calendar-days"></i></span>
+          <div>
+            <h1>シフトくん</h1>
+            <p id="appStatus">シフト表を読み込んでください</p>
+          </div>
+        </div>
+        <div class="step-strip" aria-label="操作手順">
+          <span class="step active" data-step="import">1 読み込み</span>
+          <span class="step" data-step="settings">2 基本設定</span>
+          <span class="step" data-step="rules">3 ルール</span>
+          <span class="step" data-step="create">4 作成</span>
+          <span class="step" data-step="export">5 出力</span>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="control-pane">
+          <section class="tool-section featured" id="importSection">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Import</span>
+                <h2>読み込み</h2>
+              </div>
+              <span class="section-badge" id="fileBadge">未読込</span>
+            </div>
+            <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" hidden />
+            <button class="primary action-button" id="chooseFileBtn" type="button">
+              <i data-lucide="upload"></i>
+              読み込み
+            </button>
+            <div class="field">
+              <label for="googleSheetUrl">GoogleスプレッドシートURL</label>
+              <div class="future-input">
+                <input id="googleSheetUrl" type="url" placeholder="将来対応" disabled />
+                <span>準備中</span>
+              </div>
+            </div>
+            <dl class="meta-list" id="importMeta">
+              <div>
+                <dt>ファイル</dt>
+                <dd>-</dd>
+              </div>
+              <div>
+                <dt>シート</dt>
+                <dd>-</dd>
+              </div>
+              <div>
+                <dt>日付列</dt>
+                <dd>-</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="tool-section" id="historySection">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Learning</span>
+                <h2>過去シフト学習</h2>
+              </div>
+              <span class="section-badge" id="historyBadge">0件</span>
+            </div>
+            <input id="historyFileInput" type="file" accept=".xlsx,.xls,.csv" multiple hidden />
+            <button class="action-button" id="chooseHistoryBtn" type="button">
+              <i data-lucide="brain"></i>
+              過去シフトを追加
+            </button>
+            <dl class="meta-list" id="historyMeta">
+              <div>
+                <dt>学習月</dt>
+                <dd>-</dd>
+              </div>
+              <div>
+                <dt>傾向</dt>
+                <dd>-</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="tool-section" id="accessSection">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Access</span>
+                <h2>アクセス権限</h2>
+              </div>
+              <span class="section-badge" id="accessBadge">2件</span>
+            </div>
+            <div class="field">
+              <label for="accessListInput">許可ユーザー</label>
+              <textarea id="accessListInput" class="access-input" rows="4" spellcheck="false"></textarea>
+            </div>
+            <button class="action-button access-action" id="saveAccessBtn" type="button">
+              <i data-lucide="shield-check"></i>
+              権限を保存
+            </button>
+            <dl class="meta-list" id="accessMeta">
+              <div>
+                <dt>初期権限</dt>
+                <dd>CS管理者 / CSリーダー</dd>
+              </div>
+              <div>
+                <dt>方式</dt>
+                <dd>Googleログイン</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="tool-section" id="settingsSection">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Base</span>
+                <h2>基本設定</h2>
+              </div>
+              <span class="section-badge">A / B / 公休</span>
+            </div>
+            <div class="setting-grid">
+              <div class="field compact">
+                <label for="workPatternInput">勤務記号</label>
+                <input id="workPatternInput" type="text" value="A,B" spellcheck="false" />
+              </div>
+              <div class="field compact">
+                <label for="restPatternInput">休み記号</label>
+                <input id="restPatternInput" type="text" value="公休" spellcheck="false" />
+              </div>
+            </div>
+            <div class="setting-summary" id="settingSummary">
+              <span>A</span>
+              <span>B</span>
+              <span>公休</span>
+            </div>
+          </section>
+
+          <section class="tool-section" id="rulesSection">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Rules</span>
+                <h2>ルール</h2>
+              </div>
+            </div>
+            <div class="field">
+              <label for="leaderRules">リーダー用ルール</label>
+              <textarea id="leaderRules" rows="7" spellcheck="false">7/8（水）・7/22（水）はCS定例のため、リーダー全員を出勤にする
+毎日、リーダーはAを1名以上、Bを1名以上配置する
+公休・有休・特休・既存入力済みセルは上書きしない
+AとBの回数が各リーダーでなるべく半々になるようにする
+B⇒公休⇒Aの並びはなるべく減らす
+5連勤になる場合はA/Bが偏らないように混ぜる</textarea>
+            </div>
+            <div class="field">
+              <label for="staffRules">スタッフ用ルール</label>
+              <textarea id="staffRules" rows="7" spellcheck="false">両事業対応できるメンバーを毎日最低3名配置する
+両事業対応できるメンバーは理想として毎日4名配置する
+両事業対応可否は所属/対応欄のMCL/STLで判定する
+公休・有休・特休・既存入力済みセルは上書きしない
+AとBの回数が各スタッフでなるべく半々になるようにする
+B⇒公休⇒Aの並びはなるべく減らす
+5連勤になる場合はA/Bが偏らないように混ぜる</textarea>
+            </div>
+            <input id="ruleFileInput" type="file" accept=".py,.json,.txt,.csv" hidden />
+            <button class="action-button rule-import-action" id="chooseRuleFileBtn" type="button">
+              <i data-lucide="file-code"></i>
+              条件・ルールを読み込み
+            </button>
+            <dl class="meta-list" id="ruleImportMeta">
+              <div>
+                <dt>条件</dt>
+                <dd>標準条件</dd>
+              </div>
+              <div>
+                <dt>読込</dt>
+                <dd>-</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="tool-section" id="createSection">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Build</span>
+                <h2>作成</h2>
+              </div>
+              <span class="section-badge" id="generatedBadge">0件</span>
+            </div>
+            <div class="field">
+              <label for="proposalCountSelect">生成案数</label>
+              <select id="proposalCountSelect">
+                <option value="1">1案</option>
+                <option value="3">3案</option>
+                <option value="5">5案</option>
+                <option value="10">10案</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="feedbackInput">再生成フィードバック</label>
+              <textarea id="feedbackInput" class="feedback-input" rows="3" spellcheck="false" placeholder="例：Aが多すぎる、公休が偏っている、連勤が多い"></textarea>
+            </div>
+            <div class="button-grid">
+              <button class="action-button leader-action" id="createLeaderBtn" type="button" disabled>
+                <i data-lucide="crown"></i>
+                リーダー作成
+              </button>
+              <button class="action-button staff-action" id="createStaffBtn" type="button" disabled>
+                <i data-lucide="users"></i>
+                スタッフ作成
+              </button>
+              <button class="action-button all-action" id="createAllBtn" type="button" disabled>
+                <i data-lucide="sparkles"></i>
+                全体作成
+              </button>
+            </div>
+            <button class="action-button alt-action" id="createAlternativeBtn" type="button" disabled>
+              <i data-lucide="shuffle"></i>
+              別案を作成
+            </button>
+            <div class="stats-grid" id="statsGrid" aria-live="polite">
+              <div class="stat-tile">
+                <span>リーダー</span>
+                <strong id="leaderCount">0</strong>
+              </div>
+              <div class="stat-tile">
+                <span>スタッフ</span>
+                <strong id="staffCount">0</strong>
+              </div>
+              <div class="stat-tile">
+                <span>対象外</span>
+                <strong id="excludedCount">0</strong>
+              </div>
+              <div class="stat-tile">
+                <span>作成セル</span>
+                <strong id="generatedCount">0</strong>
+              </div>
+            </div>
+          </section>
+
+          <section class="tool-section" id="exportSection">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Export</span>
+                <h2>出力</h2>
+              </div>
+            </div>
+            <div class="button-grid">
+              <button class="action-button" id="exportExcelBtn" type="button" disabled>
+                <i data-lucide="file-spreadsheet"></i>
+                Excel出力
+              </button>
+              <button class="action-button" id="exportCsvBtn" type="button" disabled>
+                <i data-lucide="file-down"></i>
+                CSV出力
+              </button>
+            </div>
+          </section>
+        </aside>
+
+        <section class="preview-pane">
+          <div class="preview-header">
+            <div>
+              <span class="eyebrow">Preview</span>
+              <h2>作成結果プレビュー</h2>
+              <p id="previewSubtext">読み込み後にシフト表を表示します</p>
+            </div>
+            <div class="legend">
+              <span><b class="legend-chip generated"></b>作成</span>
+              <span><b class="legend-chip fixed"></b>固定</span>
+              <span><b class="legend-chip warning"></b>警告</span>
+            </div>
+          </div>
+
+          <div class="result-tabs" role="tablist" aria-label="作成結果">
+            <button class="result-tab active" type="button" data-result-tab="preview" role="tab" aria-selected="true">
+              <i data-lucide="table"></i>
+              プレビュー
+            </button>
+            <button class="result-tab" type="button" data-result-tab="issues" role="tab" aria-selected="false">
+              <i data-lucide="list-checks"></i>
+              修正案・警告
+              <span id="issueBadge">0</span>
+            </button>
+          </div>
+
+          <div class="result-tab-panel active" id="previewTabPanel" data-result-panel="preview" role="tabpanel">
+            <div class="table-frame" id="tableFrame">
+              <div class="empty-state">
+                <i data-lucide="table"></i>
+                <strong>プレビュー待ち</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="result-tab-panel" id="issuesTabPanel" data-result-panel="issues" role="tabpanel">
+            <div class="proposal-panel" id="proposalPanel" hidden>
+              <div class="proposal-header">
+                <h3>生成案</h3>
+                <span id="proposalSummary">-</span>
+              </div>
+              <div class="proposal-list" id="proposalList"></div>
+              <div class="comparison-panel" id="comparisonPanel"></div>
+            </div>
+
+            <div class="alerts" id="alerts" aria-live="polite"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
