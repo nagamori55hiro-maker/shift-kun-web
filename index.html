@@ -46,25 +46,28 @@
             <div class="section-heading">
               <div>
                 <span class="eyebrow">Import</span>
-                <h2>読み込み</h2>
+                <h2>Googleスプレッドシート</h2>
               </div>
               <span class="section-badge" id="fileBadge">未読込</span>
             </div>
-            <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" hidden />
-            <button class="primary action-button" id="chooseFileBtn" type="button">
-              <i data-lucide="upload"></i>
-              読み込み
-            </button>
             <div class="field">
               <label for="googleSheetUrl">GoogleスプレッドシートURL</label>
-              <div class="future-input">
-                <input id="googleSheetUrl" type="url" placeholder="将来対応" disabled />
-                <span>準備中</span>
-              </div>
+              <input
+                id="googleSheetUrl"
+                class="sheet-url-input"
+                type="url"
+                inputmode="url"
+                autocomplete="url"
+                placeholder="https://docs.google.com/spreadsheets/d/..."
+              />
             </div>
+            <button class="primary action-button" id="loadGoogleSheetBtn" type="button">
+              <i data-lucide="cloud-download"></i>
+              スプレッドシートを読み込む
+            </button>
             <dl class="meta-list" id="importMeta">
               <div>
-                <dt>ファイル</dt>
+                <dt>スプレッドシート</dt>
                 <dd>-</dd>
               </div>
               <div>
@@ -261,13 +264,13 @@ B⇒公休⇒Aの並びはなるべく減らす
           <section class="tool-section" id="exportSection">
             <div class="section-heading">
               <div>
-                <span class="eyebrow">Export</span>
-                <h2>スプレッドシート出力</h2>
+                <span class="eyebrow">Apply</span>
+                <h2>スプレッドシートへ反映</h2>
               </div>
             </div>
-            <button class="action-button sheets-action" id="exportGoogleSheetsBtn" type="button" disabled>
-              <i data-lucide="sheet"></i>
-              スプレッドシートへ出力
+            <button class="action-button sheets-action" id="applyGoogleSheetsBtn" type="button" disabled>
+              <i data-lucide="cloud-upload"></i>
+              新しいタブへ反映
             </button>
           </section>
         </aside>
@@ -320,6 +323,6 @@ B⇒公休⇒Aの並びはなるべく減らす
 
     <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
 
-    <script src="./app.js?v=20260620-sheets-export"></script>
+    <script src="./app.js?v=20260620-url-sheets"></script>
   </body>
 </html>

@@ -57,8 +57,8 @@ const GROUP_AUTH_CONFIG = {
   endpoint: "",
 };
 const GOOGLE_SHEETS_CONFIG = {
-  // アプリが新規作成した出力ファイルだけを操作する最小権限です。
-  scopes: "https://www.googleapis.com/auth/drive.file",
+  // URLで指定されたシートの読込・反映に必要な権限です。
+  scopes: "https://www.googleapis.com/auth/spreadsheets",
 };
 
 const AUTH_CONFIG = {
@@ -71,8 +71,12 @@ const AUTH_CONFIG = {
 const state = {
   workbookName: "",
   sheetName: "",
-  sourceBuffer: null,
-  sourceMimeType: "",
+  googleSpreadsheetId: "",
+  googleSpreadsheetUrl: "",
+  googleSpreadsheetTitle: "",
+  googleSheetId: null,
+  googleAccessToken: "",
+  googleAccessTokenExpiresAt: 0,
   originalData: [],
   workingData: [],
   headerRowIndex: -1,
@@ -117,8 +121,8 @@ const els = {
   authMessage: document.querySelector("#authMessage"),
   googleSignIn: document.querySelector("#googleSignIn"),
   appStatus: document.querySelector("#appStatus"),
-  fileInput: document.querySelector("#fileInput"),
-  chooseFileBtn: document.querySelector("#chooseFileBtn"),
+  googleSheetUrl: document.querySelector("#googleSheetUrl"),
+  loadGoogleSheetBtn: document.querySelector("#loadGoogleSheetBtn"),
   historyFileInput: document.querySelector("#historyFileInput"),
   chooseHistoryBtn: document.querySelector("#chooseHistoryBtn"),
   historyBadge: document.querySelector("#historyBadge"),
@@ -143,7 +147,7 @@ const els = {
   createAlternativeBtn: document.querySelector("#createAlternativeBtn"),
   proposalCountSelect: document.querySelector("#proposalCountSelect"),
   feedbackInput: document.querySelector("#feedbackInput"),
-  exportGoogleSheetsBtn: document.querySelector("#exportGoogleSheetsBtn"),
+  applyGoogleSheetsBtn: document.querySelector("#applyGoogleSheetsBtn"),
   generatedBadge: document.querySelector("#generatedBadge"),
   leaderCount: document.querySelector("#leaderCount"),
   staffCount: document.querySelector("#staffCount"),
@@ -172,14 +176,11 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 function bindEvents() {
-  els.chooseFileBtn.addEventListener("click", () => els.fileInput.click());
   els.chooseHistoryBtn.addEventListener("click", () => els.historyFileInput.click());
   els.chooseRuleFileBtn.addEventListener("click", () => els.ruleFileInput.click());
-  els.fileInput.addEventListener("change", (event) => {
-    const [file] = event.target.files;
-    if (file) {
-      importFile(file);
-    }
+  els.loadGoogleSheetBtn.addEventListener("click", loadGoogleSheet);
+  els.googleSheetUrl.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") loadGoogleSheet();
   });
   els.historyFileInput.addEventListener("change", (event) => {
     const files = [...event.target.files];
@@ -207,7 +208,7 @@ function bindEvents() {
   els.resultTabButtons.forEach((button) => {
     button.addEventListener("click", () => setResultTab(button.dataset.resultTab));
   });
-  els.exportGoogleSheetsBtn.addEventListener("click", exportGoogleSheet);
+  els.applyGoogleSheetsBtn.addEventListener("click", applyGoogleSheet);
   els.workPatternInput.addEventListener("input", renderSettingSummary);
   els.restPatternInput.addEventListener("input", renderSettingSummary);
 }
@@ -455,33 +456,35 @@ function renderAuthGate(message = "") {
   refreshIcons();
 }
 
-async function importFile(file) {
-  setStatus("読み込み中です");
+async function loadGoogleSheet() {
+  let source;
 
   try {
-    if (!window.XLSX) {
-      throw new Error("Excel処理ライブラリを読み込めませんでした。ネットワーク接続を確認してください。");
+    source = parseGoogleSpreadsheetUrl(els.googleSheetUrl.value);
+  } catch (error) {
+    showToast(error.message || "GoogleスプレッドシートURLを確認してください。", "error");
+    return;
+  }
+
+  try {
+    setStatus("スプレッドシートを読み込み中です");
+    els.loadGoogleSheetBtn.disabled = true;
+
+    const accessToken = await getGoogleSheetsAccessToken();
+    const spreadsheet = await fetchGoogleSpreadsheet(source.spreadsheetId, accessToken);
+    const sheet = selectGoogleSheet(spreadsheet.sheets || [], source.sheetId);
+    const rows = sheetDataToRows(sheet);
+
+    if (!rows.length || !getMaxColumns(rows)) {
+      throw new Error("選択したシートに読み込み可能なデータがありません。");
     }
 
-    const buffer = await file.arrayBuffer();
-    const workbook = readWorkbook(file, buffer);
-    const sheetName = workbook.SheetNames[0];
-
-    if (!sheetName) {
-      throw new Error("シートが見つかりませんでした。");
-    }
-
-    const worksheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(worksheet, {
-      header: 1,
-      raw: true,
-      defval: "",
-    });
-
-    state.workbookName = file.name;
-    state.sheetName = sheetName;
-    state.sourceBuffer = buffer.slice(0);
-    state.sourceMimeType = getSourceMimeType(file);
+    state.workbookName = spreadsheet.properties?.title || "Googleスプレッドシート";
+    state.sheetName = sheet.properties.title;
+    state.googleSpreadsheetId = source.spreadsheetId;
+    state.googleSpreadsheetUrl = source.url;
+    state.googleSpreadsheetTitle = spreadsheet.properties?.title || "Googleスプレッドシート";
+    state.googleSheetId = sheet.properties.sheetId;
     state.originalData = normalizeRows(rows);
     state.workingData = cloneRows(state.originalData);
     state.generatedCells.clear();
@@ -494,23 +497,123 @@ async function importFile(file) {
     state.activeResultTab = "preview";
 
     analyzeStructure();
-    setStatus(`${file.name} を読み込みました`);
+    setStatus(`${state.googleSpreadsheetTitle} を読み込みました`);
     setActiveStep("settings");
     renderAll();
-    showToast(`${file.name} を読み込みました`);
+    showToast(`${state.sheetName} タブを読み込みました`);
   } catch (error) {
     state.structureWarnings = [
       {
         level: "error",
-        message: error.message || "読み込みに失敗しました。",
+        message: error.message || "スプレッドシートの読み込みに失敗しました。",
       },
     ];
-    setStatus("読み込みに失敗しました");
+    setStatus("スプレッドシートの読み込みに失敗しました");
     renderAll();
-    showToast(error.message || "読み込みに失敗しました", "error");
+    showToast(error.message || "スプレッドシートの読み込みに失敗しました", "error");
   } finally {
-    els.fileInput.value = "";
+    els.loadGoogleSheetBtn.disabled = false;
   }
+}
+
+function parseGoogleSpreadsheetUrl(value) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  const isId = /^[a-zA-Z0-9_-]{20,}$/.test(raw);
+  const spreadsheetId = match?.[1] || (isId ? raw : "");
+
+  if (!spreadsheetId) {
+    throw new Error("GoogleスプレッドシートのURLを入力してください。");
+  }
+
+  let sheetId = null;
+  try {
+    const url = new URL(raw);
+    const hashParams = new URLSearchParams(url.hash.replace(/^#/, ""));
+    const gid = url.searchParams.get("gid") || hashParams.get("gid");
+    if (gid !== null && /^\d+$/.test(gid)) sheetId = Number(gid);
+  } catch (_) {
+    // スプレッドシートIDだけが入力された場合は先頭タブを読み込みます。
+  }
+
+  return {
+    spreadsheetId,
+    sheetId,
+    url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit${sheetId === null ? "" : `#gid=${sheetId}`}`,
+  };
+}
+
+async function getGoogleSheetsAccessToken() {
+  if (state.googleAccessToken && state.googleAccessTokenExpiresAt > Date.now() + 60_000) {
+    return state.googleAccessToken;
+  }
+
+  const token = await requestGoogleSheetsAccessToken({
+    prompt: state.googleAccessToken ? "" : "consent",
+  });
+  state.googleAccessToken = token.accessToken;
+  state.googleAccessTokenExpiresAt = token.expiresAt;
+  return state.googleAccessToken;
+}
+
+async function fetchGoogleSpreadsheet(spreadsheetId, accessToken) {
+  const fields = [
+    "spreadsheetId",
+    "properties(title)",
+    "sheets(properties(sheetId,title,index,hidden),data(startRow,startColumn,rowData(values(formattedValue,effectiveValue))))",
+  ].join(",");
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?includeGridData=true&fields=${encodeURIComponent(fields)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!response.ok) {
+    throw await readGoogleApiError(response, "スプレッドシートを読み込めませんでした。共有権限を確認してください。");
+  }
+  return response.json();
+}
+
+function selectGoogleSheet(sheets, requestedSheetId) {
+  if (!sheets.length) throw new Error("スプレッドシートにシートがありません。");
+
+  if (Number.isInteger(requestedSheetId)) {
+    const matched = sheets.find((sheet) => sheet.properties?.sheetId === requestedSheetId);
+    if (!matched) throw new Error("URLで指定されたタブを見つけられませんでした。");
+    return matched;
+  }
+
+  return sheets.find((sheet) => !sheet.properties?.hidden) || sheets[0];
+}
+
+function sheetDataToRows(sheet) {
+  const rows = [];
+
+  for (const grid of sheet.data || []) {
+    const startRow = Number(grid.startRow || 0);
+    const startColumn = Number(grid.startColumn || 0);
+
+    for (const [relativeRow, rowData] of (grid.rowData || []).entries()) {
+      const rowIndex = startRow + relativeRow;
+      if (!rows[rowIndex]) rows[rowIndex] = [];
+
+      for (const [relativeColumn, cell] of (rowData.values || []).entries()) {
+        const columnIndex = startColumn + relativeColumn;
+        rows[rowIndex][columnIndex] = googleCellValue(cell);
+      }
+    }
+  }
+
+  return rows;
+}
+
+function googleCellValue(cell) {
+  if (cell?.formattedValue !== undefined) return cell.formattedValue;
+
+  const value = cell?.effectiveValue || {};
+  if (value.stringValue !== undefined) return value.stringValue;
+  if (value.numberValue !== undefined) return value.numberValue;
+  if (value.boolValue !== undefined) return value.boolValue;
+  if (value.formulaValue !== undefined) return value.formulaValue;
+  return "";
 }
 
 async function importHistoryFiles(files) {
@@ -3088,39 +3191,46 @@ function countAssignments(rowIndex) {
   }, 0);
 }
 
-async function exportGoogleSheet() {
-  if (!state.sourceBuffer || !state.workbookName) {
-    showToast("先にシフト表を読み込んでください", "error");
+async function applyGoogleSheet() {
+  if (!state.googleSpreadsheetId || !Number.isInteger(state.googleSheetId)) {
+    showToast("先にGoogleスプレッドシートを読み込んでください", "error");
+    return;
+  }
+  if (!state.generatedCells.size) {
+    showToast("作成結果がないため反映できません", "warn");
     return;
   }
 
   try {
-    setStatus("スプレッドシートを作成中です");
-    els.exportGoogleSheetsBtn.disabled = true;
+    setStatus("作成結果を新しいタブへ反映中です");
+    els.applyGoogleSheetsBtn.disabled = true;
 
-    const accessToken = await requestGoogleSheetsAccessToken();
-    const spreadsheet = await createGoogleSpreadsheet(accessToken);
-    const sheetTitle = await getGoogleSheetTitle(spreadsheet.id, accessToken);
-    await writeGeneratedCellsToGoogleSheet(spreadsheet.id, sheetTitle, accessToken);
+    const accessToken = await getGoogleSheetsAccessToken();
+    const duplicated = await duplicateSourceGoogleSheet(accessToken);
+    await writeGeneratedCellsToGoogleSheet(
+      state.googleSpreadsheetId,
+      duplicated.properties.title,
+      accessToken,
+    );
 
-    const sheetUrl = spreadsheet.webViewLink || `https://docs.google.com/spreadsheets/d/${spreadsheet.id}/edit`;
+    const sheetUrl = `https://docs.google.com/spreadsheets/d/${state.googleSpreadsheetId}/edit#gid=${duplicated.properties.sheetId}`;
     setActiveStep("export");
-    setStatus("スプレッドシートを作成しました");
-    showToast("スプレッドシートを作成しました", "success", {
+    setStatus("新しいタブへ作成結果を反映しました");
+    showToast("新しい作成結果タブを追加しました", "success", {
       label: "開く",
       href: sheetUrl,
     });
   } catch (error) {
-    const message = error.message || "スプレッドシート出力に失敗しました。";
-    pushRuntimeWarning("error", `スプレッドシート出力に失敗しました。${message}`);
-    setStatus("スプレッドシート出力に失敗しました");
+    const message = error.message || "スプレッドシートへの反映に失敗しました。";
+    pushRuntimeWarning("error", `スプレッドシートへの反映に失敗しました。${message}`);
+    setStatus("スプレッドシートへの反映に失敗しました");
     showToast(message, "error");
   } finally {
     renderAll();
   }
 }
 
-function requestGoogleSheetsAccessToken() {
+function requestGoogleSheetsAccessToken({ prompt = "consent" } = {}) {
   if (!window.google?.accounts?.oauth2) {
     return Promise.reject(new Error("Google認証を読み込めませんでした。ページを再読み込みしてください。"));
   }
@@ -3134,50 +3244,46 @@ function requestGoogleSheetsAccessToken() {
           reject(new Error("Googleスプレッドシートへのアクセスが許可されませんでした。"));
           return;
         }
-        resolve(response.access_token);
+        resolve({
+          accessToken: response.access_token,
+          expiresAt: Date.now() + Number(response.expires_in || 3600) * 1000,
+        });
       },
     });
-    tokenClient.requestAccessToken({ prompt: "consent" });
+    tokenClient.requestAccessToken({ prompt });
   });
 }
 
-async function createGoogleSpreadsheet(accessToken) {
-  const metadata = {
-    name: `${baseFileName()}_shift-kun`,
-    mimeType: "application/vnd.google-apps.spreadsheet",
-  };
-  const formData = new FormData();
-  formData.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
-  formData.append(
-    "file",
-    new Blob([state.sourceBuffer], { type: state.sourceMimeType || "application/octet-stream" }),
-    state.workbookName,
-  );
-
+async function duplicateSourceGoogleSheet(accessToken) {
+  const newSheetName = createAppliedSheetName();
   const response = await fetch(
-    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(state.googleSpreadsheetId)}:batchUpdate`,
     {
       method: "POST",
-      headers: { Authorization: `Bearer ${accessToken}` },
-      body: formData,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        requests: [
+          {
+            duplicateSheet: {
+              sourceSheetId: state.googleSheetId,
+              newSheetName,
+            },
+          },
+        ],
+      }),
     },
   );
-  if (!response.ok) throw await readGoogleApiError(response, "元ファイルをスプレッドシートへ変換できませんでした。");
-  return response.json();
-}
-
-async function getGoogleSheetTitle(spreadsheetId, accessToken) {
-  const response = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  );
-  if (!response.ok) throw await readGoogleApiError(response, "変換後のシート情報を取得できませんでした。");
+  if (!response.ok) throw await readGoogleApiError(response, "作成結果用の新しいタブを作成できませんでした。");
 
   const data = await response.json();
-  const sheets = data.sheets || [];
-  const matched = sheets.find((sheet) => sheet.properties?.title === state.sheetName) || sheets[0];
-  if (!matched?.properties?.title) throw new Error("出力先のシートを特定できませんでした。");
-  return matched.properties.title;
+  const properties = data.replies?.[0]?.duplicateSheet?.properties;
+  if (!properties?.title || !Number.isInteger(properties.sheetId)) {
+    throw new Error("作成結果用タブの情報を取得できませんでした。");
+  }
+  return { properties };
 }
 
 async function writeGeneratedCellsToGoogleSheet(spreadsheetId, sheetTitle, accessToken) {
@@ -3207,6 +3313,23 @@ async function writeGeneratedCellsToGoogleSheet(spreadsheetId, sheetTitle, acces
   if (!response.ok) throw await readGoogleApiError(response, "作成したシフトを反映できませんでした。");
 }
 
+function createAppliedSheetName() {
+  const now = new Date();
+  const datePart = [
+    String(now.getFullYear()),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("");
+  const timePart = [
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join("");
+  const suffix = `_作成結果_${datePart}_${timePart}`;
+  const source = String(state.sheetName || "シフト").replace(/[\\/?*[\]:]/g, "_");
+  return `${source.slice(0, Math.max(1, 100 - suffix.length))}${suffix}`;
+}
+
 async function readGoogleApiError(response, fallback) {
   try {
     const error = await response.json();
@@ -3227,7 +3350,7 @@ function renderAll() {
   els.createStaffBtn.disabled = !canUse;
   els.createAllBtn.disabled = !canUse;
   els.createAlternativeBtn.disabled = !canUse || !state.lastRoleKey;
-  els.exportGoogleSheetsBtn.disabled = !hasData || !state.sourceBuffer;
+  els.applyGoogleSheetsBtn.disabled = !hasData || !state.googleSpreadsheetId || !state.generatedCells.size;
   els.fileBadge.textContent = hasData ? "読込済" : "未読込";
   els.generatedBadge.textContent = `${state.generatedCells.size}件`;
   els.leaderCount.textContent = String(leaderRows.length);
@@ -3252,7 +3375,7 @@ function renderImportMeta() {
     ? `${state.dateColumns.length}列`
     : "-";
   const items = [
-    ["ファイル", state.workbookName || "-"],
+    ["スプレッドシート", state.googleSpreadsheetTitle || state.workbookName || "-"],
     ["シート", state.sheetName || "-"],
     ["日付列", dateText],
   ];
@@ -3882,22 +4005,6 @@ function kanjiNumberToInteger(value) {
   return map[value] || null;
 }
 
-function safeSheetName(name) {
-  return String(name || "shift")
-    .replace(/[\\/?*[\]:]/g, "_")
-    .slice(0, 31);
-}
-
-function getSourceMimeType(file) {
-  const name = String(file?.name || "").toLowerCase();
-  if (name.endsWith(".xlsx")) {
-    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-  }
-  if (name.endsWith(".xls")) return "application/vnd.ms-excel";
-  if (name.endsWith(".csv")) return "text/csv";
-  return file?.type || "application/octet-stream";
-}
-
 function columnIndexToA1(index) {
   let value = Number(index) + 1;
   let column = "";
@@ -3911,24 +4018,6 @@ function columnIndexToA1(index) {
 
 function quoteSheetTitle(title) {
   return `'${String(title || "").replace(/'/g, "''")}'`;
-}
-
-function baseFileName() {
-  return String(state.workbookName || "shift")
-    .replace(/\.[^.]+$/, "")
-    .replace(/[\\/:*?"<>|]/g, "_");
-}
-
-function downloadBlob(content, filename, type) {
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
 }
 
 function countReplacementCharacters(value) {
