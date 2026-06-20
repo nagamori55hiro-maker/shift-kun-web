@@ -1,0 +1,31 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null && request.auth.token.email != null;
+    }
+
+    function isBootstrapAdmin() {
+      return signedIn() && request.auth.token.email in [
+        'nagamori55hiro@gmail.com',
+        'cs.administrator@mensclear.com'
+      ];
+    }
+
+    function isAccessAdmin() {
+      return isBootstrapAdmin() || (
+        signedIn()
+        && exists(/databases/$(database)/documents/shiftKunAccess/$(request.auth.token.email))
+        && get(/databases/$(database)/documents/shiftKunAccess/$(request.auth.token.email)).data.active == true
+        && get(/databases/$(database)/documents/shiftKunAccess/$(request.auth.token.email)).data.role == 'admin'
+      );
+    }
+
+    match /shiftKunAccess/{email} {
+      allow get: if signedIn() && email == request.auth.token.email;
+      allow list: if isAccessAdmin();
+      allow create, update, delete: if isAccessAdmin();
+    }
+  }
+}

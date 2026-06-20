@@ -67,6 +67,14 @@ const AUTH_CONFIG = {
   allowedEmails: [...DEFAULT_ALLOWED_EMAILS],
   allowedDomains: [],
 };
+const FIREBASE_ACCESS_CONFIG = {
+  collectionName: "shiftKunAccess",
+  bootstrapAdminEmails: [
+    "nagamori55hiro@gmail.com",
+    "cs.administrator@mensclear.com",
+  ],
+  sdkVersion: "11.10.0",
+};
 
 const state = {
   workbookName: "",
@@ -111,9 +119,13 @@ const state = {
   auth: {
     allowed: !AUTH_CONFIG.enabled,
     profile: null,
+    role: null,
+    firebaseUser: null,
+    sharedAccessReady: false,
   },
 };
 let toastTimer = null;
+let firebaseServicesPromise = null;
 
 const els = {
   appShell: document.querySelector("#appShell"),
@@ -194,7 +206,7 @@ function bindEvents() {
       importRuleFile(file);
     }
   });
-  els.saveAccessBtn.addEventListener("click", saveAccessSettings);
+  els.saveAccessBtn.addEventListener("click", () => void saveAccessSettings());
   els.createLeaderBtn.addEventListener("click", () => createShift("leader"));
   els.createStaffBtn.addEventListener("click", () => createShift("staff"));
   els.createAllBtn.addEventListener("click", () => createShift("all"));
@@ -237,8 +249,32 @@ function loadAccessSettings() {
   renderAccessSettings();
 }
 
-function saveAccessSettings() {
+async function saveAccessSettings() {
   const parsed = parseAccessList(els.accessListInput.value);
+
+  if (usesSharedFirebaseAccess()) {
+    if (state.auth.role !== "admin") {
+      showToast("アクセス権限を変更できるのは管理者のみです", "error");
+      return;
+    }
+
+    if (parsed.allowedDomains.length) {
+      showToast("共通のアクセス権限には個別のメールアドレスを入力してください", "warn");
+    }
+
+    try {
+      await saveSharedAccessSettings(parsed.allowedEmails);
+      const message = "アクセス権限を全利用者へ共有しました";
+      setStatus(message);
+      showToast(message, "success");
+    } catch (error) {
+      const message = error?.message || "アクセス権限を共有できませんでした";
+      setStatus(message);
+      showToast(message, "error");
+    }
+    return;
+  }
+
   AUTH_CONFIG.allowedEmails = parsed.allowedEmails;
   AUTH_CONFIG.allowedDomains = parsed.allowedDomains;
 
@@ -298,6 +334,11 @@ function renderAccessSettings() {
   ];
   els.accessListInput.value = lines.join("\n");
 
+  const sharedAccess = usesSharedFirebaseAccess();
+  const canManageAccess = !sharedAccess || state.auth.role === "admin";
+  els.accessListInput.disabled = !canManageAccess;
+  els.saveAccessBtn.disabled = !canManageAccess;
+
   const count = AUTH_CONFIG.allowedEmails.length + AUTH_CONFIG.allowedDomains.length;
   if (els.accessBadge) els.accessBadge.textContent = `${count}件`;
   if (els.accessMeta) {
@@ -313,6 +354,12 @@ function renderAccessSettings() {
         </div>
       `)
       .join("");
+    if (sharedAccess) {
+      els.accessMeta.insertAdjacentHTML(
+        "beforeend",
+        `<div><dt>同期</dt><dd>${state.auth.sharedAccessReady ? "Firestore共有" : "ログイン後に確認"}</dd></div>`,
+      );
+    }
   }
 }
 
@@ -369,6 +416,23 @@ async function handleGoogleCredential(response) {
     return;
   }
 
+  if (usesSharedFirebaseAccess()) {
+    try {
+      const sharedAccess = await authorizeSharedFirebaseAccess(profile, response.credential);
+      if (sharedAccess.allowed) {
+        grantAccess(profile, sharedAccess);
+        return;
+      }
+
+      state.auth = { allowed: false, profile, role: null, firebaseUser: null, sharedAccessReady: true };
+      renderAuthGate(`${profile.email} はこのアプリの許可対象ではありません。`);
+    } catch (error) {
+      state.auth = { allowed: false, profile, role: null, firebaseUser: null, sharedAccessReady: false };
+      renderAuthGate(error?.message || "共通のアクセス権限を確認できませんでした。もう一度ログインしてください。");
+    }
+    return;
+  }
+
   if (isAllowedGoogleProfile(profile)) {
     grantAccess(profile);
     return;
@@ -384,9 +448,16 @@ async function handleGoogleCredential(response) {
   renderAuthGate(`${profile.email} はこのアプリの許可対象ではありません。`);
 }
 
-function grantAccess(profile) {
-  state.auth = { allowed: true, profile };
+function grantAccess(profile, access = {}) {
+  state.auth = {
+    allowed: true,
+    profile,
+    role: access.role || null,
+    firebaseUser: access.firebaseUser || null,
+    sharedAccessReady: Boolean(access.sharedAccessReady),
+  };
   renderAuthGate();
+  renderAccessSettings();
 }
 
 function isAllowedGoogleProfile(profile) {
@@ -424,6 +495,172 @@ async function checkGoogleGroupAccess(credential, profile) {
   } catch (_) {
     return { allowed: false };
   }
+}
+
+function usesSharedFirebaseAccess() {
+  const config = window.SHIFT_KUN_FIREBASE_CONFIG;
+  return Boolean(config?.apiKey && config?.authDomain && config?.projectId && config?.appId);
+}
+
+function isBootstrapAccessAdmin(email) {
+  return FIREBASE_ACCESS_CONFIG.bootstrapAdminEmails.includes(normalizeText(email).toLowerCase());
+}
+
+async function getFirebaseServices() {
+  if (!usesSharedFirebaseAccess()) {
+    throw new Error("Firestoreの共有権限設定が見つかりません。");
+  }
+
+  if (!firebaseServicesPromise) {
+    firebaseServicesPromise = (async () => {
+      const root = `https://www.gstatic.com/firebasejs/${FIREBASE_ACCESS_CONFIG.sdkVersion}`;
+      const [appModule, authModule, firestoreModule] = await Promise.all([
+        import(`${root}/firebase-app.js`),
+        import(`${root}/firebase-auth.js`),
+        import(`${root}/firebase-firestore.js`),
+      ]);
+      const config = window.SHIFT_KUN_FIREBASE_CONFIG;
+      const app = appModule.getApps().length ? appModule.getApp() : appModule.initializeApp(config);
+
+      return {
+        auth: authModule.getAuth(app),
+        db: firestoreModule.getFirestore(app),
+        GoogleAuthProvider: authModule.GoogleAuthProvider,
+        signInWithCredential: authModule.signInWithCredential,
+        collection: firestoreModule.collection,
+        deleteDoc: firestoreModule.deleteDoc,
+        doc: firestoreModule.doc,
+        getDoc: firestoreModule.getDoc,
+        getDocs: firestoreModule.getDocs,
+        serverTimestamp: firestoreModule.serverTimestamp,
+        setDoc: firestoreModule.setDoc,
+        writeBatch: firestoreModule.writeBatch,
+      };
+    })().catch((error) => {
+      firebaseServicesPromise = null;
+      throw error;
+    });
+  }
+
+  return firebaseServicesPromise;
+}
+
+function getSharedAccessDoc(services, email) {
+  return services.doc(services.db, FIREBASE_ACCESS_CONFIG.collectionName, normalizeText(email).toLowerCase());
+}
+
+function normalizeSharedAccessRecord(snapshot) {
+  if (!snapshot?.exists()) return null;
+  const data = snapshot.data() || {};
+  return {
+    email: normalizeText(data.email || snapshot.id).toLowerCase(),
+    active: data.active !== false,
+    role: data.role === "admin" ? "admin" : "member",
+  };
+}
+
+async function ensureSharedAccessSeed(services) {
+  const existing = await services.getDocs(services.collection(services.db, FIREBASE_ACCESS_CONFIG.collectionName));
+  if (!existing.empty) return;
+
+  const seedEmails = uniqueStrings([
+    ...DEFAULT_ALLOWED_EMAILS,
+    ...RECOVERY_ALLOWED_EMAILS,
+    ...AUTH_CONFIG.allowedEmails,
+  ]);
+  const batch = services.writeBatch(services.db);
+  seedEmails.forEach((email) => {
+    batch.set(getSharedAccessDoc(services, email), {
+      email,
+      active: true,
+      role: isBootstrapAccessAdmin(email) ? "admin" : "member",
+      updatedAt: services.serverTimestamp(),
+    });
+  });
+  await batch.commit();
+}
+
+async function loadSharedAccessSettings(services) {
+  const snapshot = await services.getDocs(services.collection(services.db, FIREBASE_ACCESS_CONFIG.collectionName));
+  const records = snapshot.docs
+    .map(normalizeSharedAccessRecord)
+    .filter((record) => record?.active && record.email)
+    .sort((a, b) => a.email.localeCompare(b.email));
+
+  AUTH_CONFIG.allowedEmails = records.map((record) => record.email);
+  AUTH_CONFIG.allowedDomains = [];
+  renderAccessSettings();
+  return records;
+}
+
+async function authorizeSharedFirebaseAccess(profile, googleIdToken) {
+  const services = await getFirebaseServices();
+  const credential = services.GoogleAuthProvider.credential(googleIdToken);
+  const result = await services.signInWithCredential(services.auth, credential);
+  const email = normalizeText(result.user?.email || profile.email).toLowerCase();
+  const profileEmail = normalizeText(profile.email).toLowerCase();
+  if (!email || email !== profileEmail) {
+    throw new Error("Googleアカウントの確認に失敗しました。");
+  }
+
+  const bootstrapAdmin = isBootstrapAccessAdmin(email);
+  if (bootstrapAdmin) {
+    await ensureSharedAccessSeed(services);
+  }
+
+  const record = normalizeSharedAccessRecord(await services.getDoc(getSharedAccessDoc(services, email)));
+  const allowed = bootstrapAdmin || Boolean(record?.active);
+  if (!allowed) return { allowed: false };
+
+  const role = bootstrapAdmin || record?.role === "admin" ? "admin" : "member";
+  if (role === "admin") {
+    await loadSharedAccessSettings(services);
+  }
+
+  return {
+    allowed: true,
+    role,
+    firebaseUser: result.user,
+    sharedAccessReady: true,
+  };
+}
+
+async function saveSharedAccessSettings(emails) {
+  const services = await getFirebaseServices();
+  const desiredEmails = uniqueStrings(emails);
+  if (!desiredEmails.length) {
+    throw new Error("少なくとも1件の許可メールアドレスを入力してください。");
+  }
+
+  const existing = await services.getDocs(services.collection(services.db, FIREBASE_ACCESS_CONFIG.collectionName));
+  const existingByEmail = new Map(
+    existing.docs
+      .map(normalizeSharedAccessRecord)
+      .filter(Boolean)
+      .map((record) => [record.email, record]),
+  );
+  const desiredSet = new Set(desiredEmails);
+  const batch = services.writeBatch(services.db);
+
+  desiredEmails.forEach((email) => {
+    const previous = existingByEmail.get(email);
+    batch.set(
+      getSharedAccessDoc(services, email),
+      {
+        email,
+        active: true,
+        role: isBootstrapAccessAdmin(email) || previous?.role === "admin" ? "admin" : "member",
+        updatedAt: services.serverTimestamp(),
+      },
+      { merge: true },
+    );
+  });
+  existingByEmail.forEach((record, email) => {
+    if (!desiredSet.has(email)) batch.delete(getSharedAccessDoc(services, email));
+  });
+
+  await batch.commit();
+  await loadSharedAccessSettings(services);
 }
 
 function decodeJwtPayload(token) {
