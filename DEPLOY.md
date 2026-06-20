@@ -45,7 +45,11 @@ firebase deploy --only hosting
 
 ## グループ単位の厳密な制限
 
-ブラウザだけではGoogleグループ所属を安全に検証できません。現在の無料・静的版では、グループのメンバーも個別メールアドレスとして許可一覧に登録してください。グループ単位で厳密に制限する場合は、Google Cloud IAP または Cloud Run + サーバー側IDトークン検証を使ってください。
+ブラウザだけではGoogleグループ所属を安全に検証できません。現在の無料・静的版では、グループのメンバーも個別メールアドレスとして許可一覧に登録してください。
+
+Google Workspaceのグループを自動判定する実装は `group-auth-worker` にあります。Cloudflare Workersの無料枠と、Workspace管理者が設定するAdmin SDK APIのドメイン全体の委任を使います。公開方法は `group-auth-worker/README.md` を参照し、公開URLを `app.js` の `GROUP_AUTH_CONFIG.endpoint` へ設定してください。
+
+グループ単位で静的ファイル自体の閲覧まで厳密に制限する場合は、Google Cloud IAP または Cloudflare Access を使ってください。
 
 IAPを使う場合は、公開先に対して以下のように許可します。
 

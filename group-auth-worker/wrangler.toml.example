@@ -1,0 +1,9 @@
+name = "shift-kun-group-auth"
+main = "src/index.js"
+compatibility_date = "2026-06-20"
+workers_dev = true
+
+[vars]
+ALLOWED_ORIGIN = "https://nagamori55hiro-maker.github.io"
+GOOGLE_OAUTH_CLIENT_ID = "309455868192-sj3j6qo659hj53lnfuelv6otu1nvcm4g.apps.googleusercontent.com"
+ALLOWED_GROUPS = '["cs.administrator@mensclear.com", "cs.leader2@mensclear.com"]'

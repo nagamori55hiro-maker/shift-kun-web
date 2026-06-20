@@ -49,8 +49,13 @@ const DEFAULT_ALLOWED_EMAILS = [
   "cs.leader2@mensclear.com",
   "nagamori55hiro@gmail.com",
 ];
+const RECOVERY_ALLOWED_EMAILS = ["nagamori55hiro@gmail.com"];
 const ACCESS_STORAGE_KEY = "shift-kun-access-list-v2";
 const LEGACY_ACCESS_STORAGE_KEY = "shift-kun-access-list-v1";
+const GROUP_AUTH_CONFIG = {
+  // Cloudflare Worker のURLを設定すると、Googleグループの実メンバー照会を有効にします。
+  endpoint: "",
+};
 
 const AUTH_CONFIG = {
   enabled: true,
@@ -347,7 +352,7 @@ function waitForGoogleIdentity(attempt = 0) {
   window.setTimeout(() => waitForGoogleIdentity(attempt + 1), 100);
 }
 
-function handleGoogleCredential(response) {
+async function handleGoogleCredential(response) {
   const profile = decodeJwtPayload(response.credential);
 
   if (!profile?.email) {
@@ -355,12 +360,22 @@ function handleGoogleCredential(response) {
     return;
   }
 
-  if (!isAllowedGoogleProfile(profile)) {
-    state.auth = { allowed: false, profile };
-    renderAuthGate(`${profile.email} はこのアプリの許可対象ではありません。`);
+  if (isAllowedGoogleProfile(profile)) {
+    grantAccess(profile);
     return;
   }
 
+  const groupAccess = await checkGoogleGroupAccess(response.credential, profile);
+  if (groupAccess.allowed) {
+    grantAccess(profile);
+    return;
+  }
+
+  state.auth = { allowed: false, profile };
+  renderAuthGate(`${profile.email} はこのアプリの許可対象ではありません。`);
+}
+
+function grantAccess(profile) {
   state.auth = { allowed: true, profile };
   renderAuthGate();
 }
@@ -369,13 +384,37 @@ function isAllowedGoogleProfile(profile) {
   const email = normalizeText(profile.email).toLowerCase();
   const domain = email.split("@")[1] || "";
   const hostedDomain = normalizeText(profile.hd).toLowerCase();
-  const allowedEmails = AUTH_CONFIG.allowedEmails.map((item) => normalizeText(item).toLowerCase());
+  const allowedEmails = uniqueStrings([
+    ...RECOVERY_ALLOWED_EMAILS,
+    ...AUTH_CONFIG.allowedEmails,
+  ]);
   const allowedDomains = AUTH_CONFIG.allowedDomains.map((item) => normalizeText(item).toLowerCase());
 
   if (allowedEmails.includes(email)) return true;
   if (allowedDomains.includes(domain) || (hostedDomain && allowedDomains.includes(hostedDomain))) return true;
 
   return false;
+}
+
+async function checkGoogleGroupAccess(credential, profile) {
+  const endpoint = normalizeText(GROUP_AUTH_CONFIG.endpoint).replace(/\/$/, "");
+  if (!endpoint || !credential || !profile?.email) return { allowed: false };
+
+  try {
+    const response = await fetch(`${endpoint}/check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential }),
+    });
+    if (!response.ok) return { allowed: false };
+
+    const result = await response.json();
+    return {
+      allowed: result?.allowed === true && normalizeText(result.email).toLowerCase() === normalizeText(profile.email).toLowerCase(),
+    };
+  } catch (_) {
+    return { allowed: false };
+  }
 }
 
 function decodeJwtPayload(token) {
