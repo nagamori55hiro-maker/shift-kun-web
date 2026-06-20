@@ -44,19 +44,20 @@ const HEADER_PATTERNS = {
   capability: ["所属/対応", "所属対応", "対応", "対応可否", "事業対応", "両事業", "対応事業", "capability"],
 };
 
+const DEFAULT_ALLOWED_EMAILS = [
+  "cs.administrator@mensclear.com",
+  "cs.leader2@mensclear.com",
+  "nagamori55hiro@gmail.com",
+];
+const ACCESS_STORAGE_KEY = "shift-kun-access-list-v2";
+const LEGACY_ACCESS_STORAGE_KEY = "shift-kun-access-list-v1";
+
 const AUTH_CONFIG = {
   enabled: true,
   googleClientId: "309455868192-sj3j6qo659hj53lnfuelv6otu1nvcm4g.apps.googleusercontent.com",
-  allowedEmails: [
-    "cs.administrator@mensclear.com",
-    "cs.leader2@mensclear.com",
-  ],
+  allowedEmails: [...DEFAULT_ALLOWED_EMAILS],
   allowedDomains: [],
-  // Googleグループ制限は本番ではサーバー側のIDトークン検証やCloud IAPで行います。
-  allowedGroups: [],
 };
-
-const ACCESS_STORAGE_KEY = "shift-kun-access-list-v1";
 
 const state = {
   workbookName: "",
@@ -207,14 +208,18 @@ function loadAccessSettings() {
   }
 
   try {
-    const saved = JSON.parse(localStorage.getItem(ACCESS_STORAGE_KEY) || "null");
+    const current = JSON.parse(localStorage.getItem(ACCESS_STORAGE_KEY) || "null");
+    const legacy = JSON.parse(localStorage.getItem(LEGACY_ACCESS_STORAGE_KEY) || "null");
+    const saved = current || legacy;
     if (saved && Array.isArray(saved.allowedEmails)) {
-      AUTH_CONFIG.allowedEmails = saved.allowedEmails;
+      AUTH_CONFIG.allowedEmails = current
+        ? saved.allowedEmails
+        : uniqueStrings([...DEFAULT_ALLOWED_EMAILS, ...saved.allowedEmails]);
       AUTH_CONFIG.allowedDomains = Array.isArray(saved.allowedDomains) ? saved.allowedDomains : [];
-      AUTH_CONFIG.allowedGroups = Array.isArray(saved.allowedGroups) ? saved.allowedGroups : [];
     }
   } catch (_) {
     localStorage.removeItem(ACCESS_STORAGE_KEY);
+    localStorage.removeItem(LEGACY_ACCESS_STORAGE_KEY);
   }
 
   renderAccessSettings();
@@ -224,13 +229,15 @@ function saveAccessSettings() {
   const parsed = parseAccessList(els.accessListInput.value);
   AUTH_CONFIG.allowedEmails = parsed.allowedEmails;
   AUTH_CONFIG.allowedDomains = parsed.allowedDomains;
-  AUTH_CONFIG.allowedGroups = parsed.allowedGroups;
 
   if (typeof localStorage !== "undefined") {
     localStorage.setItem(ACCESS_STORAGE_KEY, JSON.stringify(parsed));
+    localStorage.removeItem(LEGACY_ACCESS_STORAGE_KEY);
   }
   renderAccessSettings();
-  setStatus("アクセス権限を保存しました");
+  setStatus(parsed.ignoredGroups.length
+    ? "Googleグループは個別メールを登録してください"
+    : "アクセス権限を保存しました");
 }
 
 function parseAccessList(value) {
@@ -240,11 +247,11 @@ function parseAccessList(value) {
     .filter(Boolean);
   const allowedEmails = [];
   const allowedDomains = [];
-  const allowedGroups = [];
+  const ignoredGroups = [];
 
   items.forEach((item) => {
     if (item.startsWith("group:")) {
-      allowedGroups.push(item.replace(/^group:/, "").trim());
+      ignoredGroups.push(item.replace(/^group:/, "").trim());
       return;
     }
 
@@ -264,7 +271,7 @@ function parseAccessList(value) {
   return {
     allowedEmails: uniqueStrings(allowedEmails),
     allowedDomains: uniqueStrings(allowedDomains),
-    allowedGroups: uniqueStrings(allowedGroups),
+    ignoredGroups: uniqueStrings(ignoredGroups),
   };
 }
 
@@ -274,17 +281,15 @@ function renderAccessSettings() {
   const lines = [
     ...AUTH_CONFIG.allowedEmails,
     ...AUTH_CONFIG.allowedDomains.map((domain) => `@${domain}`),
-    ...AUTH_CONFIG.allowedGroups.map((group) => `group:${group}`),
   ];
   els.accessListInput.value = lines.join("\n");
 
-  const count = AUTH_CONFIG.allowedEmails.length + AUTH_CONFIG.allowedDomains.length + AUTH_CONFIG.allowedGroups.length;
+  const count = AUTH_CONFIG.allowedEmails.length + AUTH_CONFIG.allowedDomains.length;
   if (els.accessBadge) els.accessBadge.textContent = `${count}件`;
   if (els.accessMeta) {
     els.accessMeta.innerHTML = [
       ["ユーザー", `${AUTH_CONFIG.allowedEmails.length}件`],
       ["ドメイン", `${AUTH_CONFIG.allowedDomains.length}件`],
-      ["グループ", `${AUTH_CONFIG.allowedGroups.length}件`],
       ["方式", AUTH_CONFIG.enabled ? "Googleログイン有効" : "ローカル確認中"],
     ]
       .map(([label, value]) => `
