@@ -12,13 +12,22 @@
   <body>
     <div class="auth-gate" id="authGate" hidden>
       <div class="auth-card">
-        <span class="brand-mark"><i data-lucide="shield-check"></i></span>
-        <div>
-          <span class="eyebrow">Access</span>
+        <section class="auth-brand" aria-label="シフトくん">
+          <span class="brand-mark auth-brand-mark"><i data-lucide="shield-check"></i></span>
+          <span class="auth-overline">SHIFT KUN</span>
           <h1>シフトくん</h1>
+          <span class="auth-brand-rule" aria-hidden="true"></span>
+          <p>認証済みワークスペース</p>
+        </section>
+        <section class="auth-login" aria-labelledby="authLoginTitle">
+          <span class="auth-overline">ACCESS</span>
+          <h2 id="authLoginTitle">アカウントを確認</h2>
           <p id="authMessage">許可されたGoogleアカウントでログインしてください。</p>
+          <div class="auth-signin-frame">
+            <div id="googleSignIn" class="google-signin"></div>
+          </div>
         </div>
-        <div id="googleSignIn" class="google-signin"></div>
+        </section>
       </div>
     </div>
 
