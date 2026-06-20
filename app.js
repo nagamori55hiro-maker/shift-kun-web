@@ -386,6 +386,11 @@ function initAccessControl() {
 }
 
 function waitForGoogleIdentity(attempt = 0) {
+  if (usesSharedFirebaseAccess()) {
+    renderFirebaseGoogleSignIn();
+    return;
+  }
+
   if (window.google?.accounts?.id) {
     window.google.accounts.id.initialize({
       client_id: AUTH_CONFIG.googleClientId,
@@ -406,6 +411,51 @@ function waitForGoogleIdentity(attempt = 0) {
   }
 
   window.setTimeout(() => waitForGoogleIdentity(attempt + 1), 100);
+}
+
+function renderFirebaseGoogleSignIn() {
+  if (!els.googleSignIn || els.googleSignIn.dataset.provider === "firebase") return;
+
+  els.googleSignIn.dataset.provider = "firebase";
+  els.googleSignIn.innerHTML = `
+    <button class="firebase-google-signin" type="button">
+      <span class="firebase-google-signin-mark" aria-hidden="true">G</span>
+      <span>Google でログイン</span>
+    </button>
+  `;
+  els.googleSignIn.querySelector("button")?.addEventListener("click", () => void signInWithFirebasePopup());
+}
+
+async function signInWithFirebasePopup() {
+  const button = els.googleSignIn?.querySelector("button");
+  if (button) button.disabled = true;
+  renderAuthGate("Googleアカウントを確認しています。");
+
+  try {
+    const services = await getFirebaseServices();
+    const provider = new services.GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account" });
+    const result = await services.signInWithPopup(services.auth, provider);
+    const profile = {
+      email: result.user?.email || "",
+      name: result.user?.displayName || "",
+    };
+    const sharedAccess = await resolveSharedFirebaseAccess(result.user, profile.email);
+    if (!sharedAccess.allowed) {
+      state.auth = { allowed: false, profile, role: null, firebaseUser: result.user, sharedAccessReady: true };
+      renderAuthGate(`${profile.email} はこのアプリの許可対象ではありません。`);
+      return;
+    }
+
+    grantAccess(profile, sharedAccess);
+  } catch (error) {
+    const message = error?.code === "auth/popup-closed-by-user"
+      ? "Googleログインがキャンセルされました。"
+      : error?.message || "Googleログインに失敗しました。";
+    renderAuthGate(message);
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function handleGoogleCredential(response) {
@@ -527,6 +577,7 @@ async function getFirebaseServices() {
         db: firestoreModule.getFirestore(app),
         GoogleAuthProvider: authModule.GoogleAuthProvider,
         signInWithCredential: authModule.signInWithCredential,
+        signInWithPopup: authModule.signInWithPopup,
         collection: firestoreModule.collection,
         deleteDoc: firestoreModule.deleteDoc,
         doc: firestoreModule.doc,
@@ -603,6 +654,14 @@ async function authorizeSharedFirebaseAccess(profile, googleIdToken) {
     throw new Error("Googleアカウントの確認に失敗しました。");
   }
 
+  return resolveSharedFirebaseAccess(result.user, email);
+}
+
+async function resolveSharedFirebaseAccess(firebaseUser, fallbackEmail = "") {
+  const services = await getFirebaseServices();
+  const email = normalizeText(firebaseUser?.email || fallbackEmail).toLowerCase();
+  if (!email) throw new Error("Googleアカウントの確認に失敗しました。");
+
   const bootstrapAdmin = isBootstrapAccessAdmin(email);
   if (bootstrapAdmin) {
     await ensureSharedAccessSeed(services);
@@ -620,7 +679,7 @@ async function authorizeSharedFirebaseAccess(profile, googleIdToken) {
   return {
     allowed: true,
     role,
-    firebaseUser: result.user,
+    firebaseUser,
     sharedAccessReady: true,
   };
 }
