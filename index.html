@@ -262,19 +262,13 @@ B⇒公休⇒Aの並びはなるべく減らす
             <div class="section-heading">
               <div>
                 <span class="eyebrow">Export</span>
-                <h2>出力</h2>
+                <h2>スプレッドシート出力</h2>
               </div>
             </div>
-            <div class="button-grid">
-              <button class="action-button" id="exportExcelBtn" type="button" disabled>
-                <i data-lucide="file-spreadsheet"></i>
-                Excel出力
-              </button>
-              <button class="action-button" id="exportCsvBtn" type="button" disabled>
-                <i data-lucide="file-down"></i>
-                CSV出力
-              </button>
-            </div>
+            <button class="action-button sheets-action" id="exportGoogleSheetsBtn" type="button" disabled>
+              <i data-lucide="sheet"></i>
+              スプレッドシートへ出力
+            </button>
           </section>
         </aside>
 
@@ -284,11 +278,6 @@ B⇒公休⇒Aの並びはなるべく減らす
               <span class="eyebrow">Preview</span>
               <h2>作成結果プレビュー</h2>
               <p id="previewSubtext">読み込み後にシフト表を表示します</p>
-            </div>
-            <div class="legend">
-              <span><b class="legend-chip generated"></b>作成</span>
-              <span><b class="legend-chip fixed"></b>固定</span>
-              <span><b class="legend-chip warning"></b>警告</span>
             </div>
           </div>
 
@@ -329,6 +318,8 @@ B⇒公休⇒Aの並びはなるべく減らす
       </main>
     </div>
 
-    <script src="./app.js?v=20260620-group-auth"></script>
+    <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+
+    <script src="./app.js?v=20260620-sheets-export"></script>
   </body>
 </html>

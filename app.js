@@ -56,6 +56,10 @@ const GROUP_AUTH_CONFIG = {
   // Cloudflare Worker のURLを設定すると、Googleグループの実メンバー照会を有効にします。
   endpoint: "",
 };
+const GOOGLE_SHEETS_CONFIG = {
+  // アプリが新規作成した出力ファイルだけを操作する最小権限です。
+  scopes: "https://www.googleapis.com/auth/drive.file",
+};
 
 const AUTH_CONFIG = {
   enabled: true,
@@ -67,6 +71,8 @@ const AUTH_CONFIG = {
 const state = {
   workbookName: "",
   sheetName: "",
+  sourceBuffer: null,
+  sourceMimeType: "",
   originalData: [],
   workingData: [],
   headerRowIndex: -1,
@@ -103,6 +109,7 @@ const state = {
     profile: null,
   },
 };
+let toastTimer = null;
 
 const els = {
   appShell: document.querySelector("#appShell"),
@@ -136,8 +143,7 @@ const els = {
   createAlternativeBtn: document.querySelector("#createAlternativeBtn"),
   proposalCountSelect: document.querySelector("#proposalCountSelect"),
   feedbackInput: document.querySelector("#feedbackInput"),
-  exportExcelBtn: document.querySelector("#exportExcelBtn"),
-  exportCsvBtn: document.querySelector("#exportCsvBtn"),
+  exportGoogleSheetsBtn: document.querySelector("#exportGoogleSheetsBtn"),
   generatedBadge: document.querySelector("#generatedBadge"),
   leaderCount: document.querySelector("#leaderCount"),
   staffCount: document.querySelector("#staffCount"),
@@ -154,6 +160,7 @@ const els = {
   tableFrame: document.querySelector("#tableFrame"),
   previewSubtext: document.querySelector("#previewSubtext"),
   steps: document.querySelectorAll(".step"),
+  toastRegion: document.querySelector("#toastRegion"),
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -200,8 +207,7 @@ function bindEvents() {
   els.resultTabButtons.forEach((button) => {
     button.addEventListener("click", () => setResultTab(button.dataset.resultTab));
   });
-  els.exportExcelBtn.addEventListener("click", exportExcel);
-  els.exportCsvBtn.addEventListener("click", exportCsv);
+  els.exportGoogleSheetsBtn.addEventListener("click", exportGoogleSheet);
   els.workPatternInput.addEventListener("input", renderSettingSummary);
   els.restPatternInput.addEventListener("input", renderSettingSummary);
 }
@@ -240,9 +246,11 @@ function saveAccessSettings() {
     localStorage.removeItem(LEGACY_ACCESS_STORAGE_KEY);
   }
   renderAccessSettings();
-  setStatus(parsed.ignoredGroups.length
+  const message = parsed.ignoredGroups.length
     ? "Googleグループは個別メールを登録してください"
-    : "アクセス権限を保存しました");
+    : "アクセス権限を保存しました";
+  setStatus(message);
+  showToast(message, parsed.ignoredGroups.length ? "warn" : "success");
 }
 
 function parseAccessList(value) {
@@ -472,6 +480,8 @@ async function importFile(file) {
 
     state.workbookName = file.name;
     state.sheetName = sheetName;
+    state.sourceBuffer = buffer.slice(0);
+    state.sourceMimeType = getSourceMimeType(file);
     state.originalData = normalizeRows(rows);
     state.workingData = cloneRows(state.originalData);
     state.generatedCells.clear();
@@ -481,11 +491,13 @@ async function importFile(file) {
     state.proposals = [];
     state.activeProposalIndex = -1;
     state.lastRoleKey = null;
+    state.activeResultTab = "preview";
 
     analyzeStructure();
     setStatus(`${file.name} を読み込みました`);
     setActiveStep("settings");
     renderAll();
+    showToast(`${file.name} を読み込みました`);
   } catch (error) {
     state.structureWarnings = [
       {
@@ -495,6 +507,7 @@ async function importFile(file) {
     ];
     setStatus("読み込みに失敗しました");
     renderAll();
+    showToast(error.message || "読み込みに失敗しました", "error");
   } finally {
     els.fileInput.value = "";
   }
@@ -523,8 +536,10 @@ async function importHistoryFiles(files) {
 
     setStatus(`${files.length}件の過去シフトを学習しました`);
     renderAll();
+    showToast(`${files.length}件の過去シフトを学習しました`);
   } catch (error) {
     pushRuntimeWarning("error", `過去シフトの学習に失敗しました。${error.message || ""}`);
+    showToast(error.message || "過去シフトの学習に失敗しました", "error");
   } finally {
     els.historyFileInput.value = "";
   }
@@ -542,8 +557,10 @@ async function importRuleFile(file) {
     renderSettingSummary();
     setStatus(`${file.name} の条件・ルールを読み込みました`);
     setActiveStep("rules");
+    showToast(`${file.name} の条件・ルールを読み込みました`);
   } catch (error) {
     pushRuntimeWarning("error", `条件・ルールの読み込みに失敗しました。${error.message || ""}`);
+    showToast(error.message || "条件・ルールの読み込みに失敗しました", "error");
   } finally {
     els.ruleFileInput.value = "";
   }
@@ -1179,6 +1196,7 @@ function createShift(roleKey, options = {}) {
       },
     ];
     renderAll();
+    showToast(readiness, "error");
     return;
   }
 
@@ -1216,6 +1234,7 @@ function createShift(roleKey, options = {}) {
     setStatus(`${ROLE_LABELS[roleKey]}の案を作成できませんでした`);
     setActiveStep("create");
     renderAll();
+    showToast(`${ROLE_LABELS[roleKey]}の案を作成できませんでした`, "error");
     return;
   }
 
@@ -1228,7 +1247,15 @@ function createShift(roleKey, options = {}) {
     ? `${ROLE_LABELS[roleKey]}は要修正です（エラー${active.errorCount}件 / ${state.proposals.length}案）${scoreText}`
     : `${ROLE_LABELS[roleKey]}を${state.proposals.length}案作成しました${scoreText}`);
   setActiveStep("create");
+  state.activeResultTab = "preview";
   renderAll();
+  const completedLabel = options.completionLabel || `${ROLE_LABELS[roleKey]}の作成`;
+  showToast(
+    active.errorCount
+      ? `${completedLabel}が完了しました。修正案・警告を確認してください。`
+      : `${completedLabel}が完了しました。`,
+    active.errorCount ? "warn" : "success",
+  );
 }
 
 function buildShiftProposal(roleKey, proposalIndex) {
@@ -1293,6 +1320,7 @@ function createAlternativeShift() {
   createShift(state.lastRoleKey, {
     proposalCount: 1,
     carryProposals: carriedProposals,
+    completionLabel: "別案の作成",
   });
 }
 
@@ -1302,6 +1330,7 @@ function selectProposal(index) {
   const proposal = state.proposals[index];
   setStatus(`${ROLE_LABELS[proposal.roleKey]} ${proposal.label}を表示中（${proposal.displayScore}点）`);
   renderAll();
+  showToast(`${proposal.label}に切り替えました`);
 }
 
 function applyProposal(index) {
@@ -3059,40 +3088,131 @@ function countAssignments(rowIndex) {
   }, 0);
 }
 
-function exportExcel() {
+async function exportGoogleSheet() {
+  if (!state.sourceBuffer || !state.workbookName) {
+    showToast("先にシフト表を読み込んでください", "error");
+    return;
+  }
+
   try {
-    const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.aoa_to_sheet(state.workingData);
-    XLSX.utils.book_append_sheet(workbook, worksheet, safeSheetName(state.sheetName || "shift"));
+    setStatus("スプレッドシートを作成中です");
+    els.exportGoogleSheetsBtn.disabled = true;
 
-    const warnings = getAllWarnings();
-    if (warnings.length) {
-      const warningRows = [
-        ["種別", "内容"],
-        ...warnings.map((warning) => [warning.level === "error" ? "エラー" : "警告", warning.message]),
-      ];
-      XLSX.utils.book_append_sheet(
-        workbook,
-        XLSX.utils.aoa_to_sheet(warningRows),
-        "warnings",
-      );
-    }
+    const accessToken = await requestGoogleSheetsAccessToken();
+    const spreadsheet = await createGoogleSpreadsheet(accessToken);
+    const sheetTitle = await getGoogleSheetTitle(spreadsheet.id, accessToken);
+    await writeGeneratedCellsToGoogleSheet(spreadsheet.id, sheetTitle, accessToken);
 
-    XLSX.writeFile(workbook, `${baseFileName()}_shift-kun.xlsx`);
+    const sheetUrl = spreadsheet.webViewLink || `https://docs.google.com/spreadsheets/d/${spreadsheet.id}/edit`;
     setActiveStep("export");
+    setStatus("スプレッドシートを作成しました");
+    showToast("スプレッドシートを作成しました", "success", {
+      label: "開く",
+      href: sheetUrl,
+    });
   } catch (error) {
-    pushRuntimeWarning("error", `Excel出力に失敗しました。${error.message || ""}`);
+    const message = error.message || "スプレッドシート出力に失敗しました。";
+    pushRuntimeWarning("error", `スプレッドシート出力に失敗しました。${message}`);
+    setStatus("スプレッドシート出力に失敗しました");
+    showToast(message, "error");
+  } finally {
+    renderAll();
   }
 }
 
-function exportCsv() {
+function requestGoogleSheetsAccessToken() {
+  if (!window.google?.accounts?.oauth2) {
+    return Promise.reject(new Error("Google認証を読み込めませんでした。ページを再読み込みしてください。"));
+  }
+
+  return new Promise((resolve, reject) => {
+    const tokenClient = window.google.accounts.oauth2.initTokenClient({
+      client_id: AUTH_CONFIG.googleClientId,
+      scope: GOOGLE_SHEETS_CONFIG.scopes,
+      callback: (response) => {
+        if (response.error || !response.access_token) {
+          reject(new Error("Googleスプレッドシートへのアクセスが許可されませんでした。"));
+          return;
+        }
+        resolve(response.access_token);
+      },
+    });
+    tokenClient.requestAccessToken({ prompt: "consent" });
+  });
+}
+
+async function createGoogleSpreadsheet(accessToken) {
+  const metadata = {
+    name: `${baseFileName()}_shift-kun`,
+    mimeType: "application/vnd.google-apps.spreadsheet",
+  };
+  const formData = new FormData();
+  formData.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
+  formData.append(
+    "file",
+    new Blob([state.sourceBuffer], { type: state.sourceMimeType || "application/octet-stream" }),
+    state.workbookName,
+  );
+
+  const response = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: formData,
+    },
+  );
+  if (!response.ok) throw await readGoogleApiError(response, "元ファイルをスプレッドシートへ変換できませんでした。");
+  return response.json();
+}
+
+async function getGoogleSheetTitle(spreadsheetId, accessToken) {
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!response.ok) throw await readGoogleApiError(response, "変換後のシート情報を取得できませんでした。");
+
+  const data = await response.json();
+  const sheets = data.sheets || [];
+  const matched = sheets.find((sheet) => sheet.properties?.title === state.sheetName) || sheets[0];
+  if (!matched?.properties?.title) throw new Error("出力先のシートを特定できませんでした。");
+  return matched.properties.title;
+}
+
+async function writeGeneratedCellsToGoogleSheet(spreadsheetId, sheetTitle, accessToken) {
+  const data = [...state.generatedCells.values()]
+    .sort((a, b) => a.rowIndex - b.rowIndex || a.colIndex - b.colIndex)
+    .map((cell) => ({
+      range: `${quoteSheetTitle(sheetTitle)}!${columnIndexToA1(cell.colIndex)}${cell.rowIndex + 1}`,
+      values: [[formatCell(state.workingData[cell.rowIndex]?.[cell.colIndex])]],
+    }));
+
+  if (!data.length) return;
+
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchUpdate`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        valueInputOption: "RAW",
+        data,
+      }),
+    },
+  );
+  if (!response.ok) throw await readGoogleApiError(response, "作成したシフトを反映できませんでした。");
+}
+
+async function readGoogleApiError(response, fallback) {
   try {
-    const worksheet = XLSX.utils.aoa_to_sheet(toDisplayRows(state.workingData));
-    const csv = XLSX.utils.sheet_to_csv(worksheet);
-    downloadBlob(csv, `${baseFileName()}_shift-kun.csv`, "text/csv;charset=utf-8");
-    setActiveStep("export");
-  } catch (error) {
-    pushRuntimeWarning("error", `CSV出力に失敗しました。${error.message || ""}`);
+    const error = await response.json();
+    return new Error(error?.error?.message || fallback);
+  } catch (_) {
+    return new Error(fallback);
   }
 }
 
@@ -3107,8 +3227,7 @@ function renderAll() {
   els.createStaffBtn.disabled = !canUse;
   els.createAllBtn.disabled = !canUse;
   els.createAlternativeBtn.disabled = !canUse || !state.lastRoleKey;
-  els.exportExcelBtn.disabled = !hasData;
-  els.exportCsvBtn.disabled = !hasData;
+  els.exportGoogleSheetsBtn.disabled = !hasData || !state.sourceBuffer;
   els.fileBadge.textContent = hasData ? "読込済" : "未読込";
   els.generatedBadge.textContent = `${state.generatedCells.size}件`;
   els.leaderCount.textContent = String(leaderRows.length);
@@ -3271,13 +3390,13 @@ function renderProposals() {
 
 function renderComparison(active) {
   if (state.proposals.length < 2) {
-    els.comparisonPanel.innerHTML = `<div>複数案を作成すると、ここに差分を表示します。</div>`;
+    els.comparisonPanel.innerHTML = "";
     return;
   }
 
   const compareIndex = state.activeProposalIndex === 0 ? 1 : 0;
   const source = state.proposals[compareIndex];
-  const diffs = buildProposalDiff(source, active, 14);
+  const diffs = buildProposalDiff(source, active);
   const heading = `<strong>${escapeHtml(source.label)} → ${escapeHtml(active.label)} の差分</strong>`;
 
   if (!diffs.length) {
@@ -3287,16 +3406,15 @@ function renderComparison(active) {
 
   els.comparisonPanel.innerHTML = [
     heading,
-    ...diffs.map((diff) => `
-      <div class="diff-item">
-        ${escapeHtml(diff.name)} / ${escapeHtml(diff.date)}:
-        ${escapeHtml(diff.before)} → ${escapeHtml(diff.after)}
-      </div>
-    `),
+    renderMemberIssueGroups(diffs.map((diff) => ({
+      ...diff,
+      level: "info",
+      message: `${diff.date}: ${diff.before} → ${diff.after}`,
+    })), "差分"),
   ].join("");
 }
 
-function buildProposalDiff(source, target, limit = 12) {
+function buildProposalDiff(source, target) {
   if (!source || !target) return [];
 
   const diffs = [];
@@ -3307,21 +3425,20 @@ function buildProposalDiff(source, target, limit = 12) {
     const sourceName = sourceRows[rowIndex]?.[state.nameColIndex];
     const targetName = targetRows[rowIndex]?.[state.nameColIndex];
     const name = normalizeText(targetName) || normalizeText(sourceName) || `行${rowIndex + 1}`;
+    const role = normalizeText(targetRows[rowIndex]?.[state.roleColIndex]) || normalizeText(sourceRows[rowIndex]?.[state.roleColIndex]);
 
     state.dateColumns.forEach((dateColumn) => {
-      if (diffs.length >= limit) return;
       const before = normalizeText(sourceRows[rowIndex]?.[dateColumn.index]);
       const after = normalizeText(targetRows[rowIndex]?.[dateColumn.index]);
       if (before === after) return;
       diffs.push({
         name,
+        role,
         date: dateColumn.label,
         before: before || "空欄",
         after: after || "空欄",
       });
     });
-
-    if (diffs.length >= limit) break;
   }
 
   return diffs;
@@ -3348,21 +3465,65 @@ function renderAlerts() {
     return;
   }
 
-  els.alerts.innerHTML = warnings
-    .map((warning) => {
-      const icon = warning.level === "error"
-        ? "circle-alert"
-        : warning.level === "info"
-          ? "gauge"
-          : "triangle-alert";
-      return `
-        <div class="alert ${warning.level === "error" ? "error" : warning.level === "info" ? "info" : "warn"}">
-          <i data-lucide="${icon}"></i>
-          <span>${escapeHtml(warning.message)}</span>
-        </div>
-      `;
-    })
-    .join("");
+  els.alerts.innerHTML = renderMemberIssueGroups(warnings, "警告");
+}
+
+function renderMemberIssueGroups(items, itemLabel) {
+  const groups = groupIssuesByMember(items);
+  return groups.map((group) => {
+    const errorCount = group.items.filter((item) => item.level === "error").length;
+    const warningCount = group.items.filter((item) => item.level === "warn").length;
+    const isOpen = errorCount > 0 || group.name === "全体";
+    const badges = [
+      errorCount ? `<span class="issue-pill error">エラー${errorCount}件</span>` : "",
+      warningCount ? `<span class="issue-pill warn">警告${warningCount}件</span>` : "",
+      !errorCount && !warningCount ? `<span class="issue-pill">${group.items.length}件</span>` : "",
+    ].join("");
+
+    return `
+      <details class="issue-member"${isOpen ? " open" : ""}>
+        <summary>
+          <span class="issue-member-heading">${escapeHtml(group.role)} / ${escapeHtml(group.name)}</span>
+          <span class="issue-pills">${badges}</span>
+        </summary>
+        <ul class="issue-list" aria-label="${escapeHtml(group.name)}の${escapeHtml(itemLabel)}">
+          ${group.items.map((item) => `
+            <li class="issue-line ${escapeHtml(item.level || "info")}">${escapeHtml(item.message)}</li>
+          `).join("")}
+        </ul>
+      </details>
+    `;
+  }).join("");
+}
+
+function groupIssuesByMember(items) {
+  const members = ["leader", "staff"].flatMap((roleKey) => getMemberRows(roleKey).map((rowIndex) => ({
+    role: ROLE_LABELS[roleKey],
+    name: getMemberName(rowIndex),
+  }))).sort((a, b) => b.name.length - a.name.length);
+  const grouped = new Map();
+
+  items.forEach((item) => {
+    const match = members.find((member) => item.name === member.name || normalizeText(item.message).includes(member.name));
+    const role = normalizeText(item.role) || match?.role || inferIssueRole(item.message);
+    const name = normalizeText(item.name) || match?.name || "全体";
+    const key = `${role}:${name}`;
+    if (!grouped.has(key)) grouped.set(key, { role, name, items: [] });
+    grouped.get(key).items.push(item);
+  });
+
+  return [...grouped.values()].sort((a, b) => {
+    if (a.name === "全体") return -1;
+    if (b.name === "全体") return 1;
+    return a.role.localeCompare(b.role, "ja") || a.name.localeCompare(b.name, "ja");
+  });
+}
+
+function inferIssueRole(message) {
+  const text = normalizeText(message);
+  if (text.includes("リーダー")) return "リーダー";
+  if (text.includes("スタッフ")) return "スタッフ";
+  return "全体";
 }
 
 function getDisplayWarnings() {
@@ -3393,11 +3554,6 @@ function renderPreview() {
   }
 
   const maxColumns = getMaxColumns(state.workingData);
-  const warningColumns = new Set(
-    getAllWarnings()
-      .map((warning) => warning.colIndex)
-      .filter((colIndex) => Number.isInteger(colIndex)),
-  );
   const dateColumnIndexes = new Set(state.dateColumns.map((column) => column.index));
   const stickyColumnIndexes = getStickyColumnIndexes();
 
@@ -3416,7 +3572,6 @@ function renderPreview() {
           isHeaderRow,
           dateColumnIndexes,
           stickyColumnIndexes,
-          warningColumns,
         });
         return `<${tag} class="${classes}">${escapeHtml(formatCell(value))}</${tag}>`;
       }).join("");
@@ -3449,18 +3604,6 @@ function getCellClasses(context) {
 
   if (context.dateColumnIndexes.has(context.colIndex)) {
     classes.push("date-cell");
-  }
-
-  if (context.warningColumns.has(context.colIndex) && context.dateColumnIndexes.has(context.colIndex)) {
-    classes.push("warning-col");
-  }
-
-  if (!context.isHeaderRow && isFixedCell(context.value)) {
-    classes.push("fixed-cell");
-  }
-
-  if (state.generatedCells.has(cellKey(context.rowIndex, context.colIndex))) {
-    classes.push("generated-cell");
   }
 
   return classes.join(" ");
@@ -3499,6 +3642,36 @@ function getReadinessProblem() {
 
 function setStatus(text) {
   els.appStatus.textContent = text;
+}
+
+function showToast(message, level = "success", action = null) {
+  if (!els.toastRegion) return;
+
+  const type = ["success", "warn", "error"].includes(level) ? level : "success";
+  const icon = type === "error" ? "circle-alert" : type === "warn" ? "triangle-alert" : "circle-check";
+  const actionMarkup = action?.href
+    ? `<a class="toast-link" href="${escapeHtml(action.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(action.label || "開く")}</a>`
+    : "";
+
+  if (toastTimer && typeof window.clearTimeout === "function") window.clearTimeout(toastTimer);
+  els.toastRegion.innerHTML = `
+    <div class="toast ${type}" role="status">
+      <i data-lucide="${icon}"></i>
+      <span>${escapeHtml(message)}</span>
+      ${actionMarkup}
+      <button class="toast-close" type="button" aria-label="通知を閉じる"><i data-lucide="x"></i></button>
+    </div>
+  `;
+
+  const close = () => {
+    if (toastTimer && typeof window.clearTimeout === "function") window.clearTimeout(toastTimer);
+    els.toastRegion.innerHTML = "";
+  };
+  els.toastRegion.querySelector?.(".toast-close")?.addEventListener("click", close);
+  if (typeof window.setTimeout === "function") {
+    toastTimer = window.setTimeout(close, action?.href ? 10_000 : 5_000);
+  }
+  refreshIcons();
 }
 
 function setActiveStep(stepName) {
@@ -3713,6 +3886,31 @@ function safeSheetName(name) {
   return String(name || "shift")
     .replace(/[\\/?*[\]:]/g, "_")
     .slice(0, 31);
+}
+
+function getSourceMimeType(file) {
+  const name = String(file?.name || "").toLowerCase();
+  if (name.endsWith(".xlsx")) {
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  }
+  if (name.endsWith(".xls")) return "application/vnd.ms-excel";
+  if (name.endsWith(".csv")) return "text/csv";
+  return file?.type || "application/octet-stream";
+}
+
+function columnIndexToA1(index) {
+  let value = Number(index) + 1;
+  let column = "";
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    column = String.fromCharCode(65 + remainder) + column;
+    value = Math.floor((value - 1) / 26);
+  }
+  return column;
+}
+
+function quoteSheetTitle(title) {
+  return `'${String(title || "").replace(/'/g, "''")}'`;
 }
 
 function baseFileName() {
